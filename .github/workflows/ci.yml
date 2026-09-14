@@ -12,8 +12,8 @@ on:
 jobs:
   build-and-test:
 
-    # Evita ejecutar el workflow para PRs provenientes de forks,
-    # donde GitHub no entrega los Secrets.
+    # No ejecutar en PRs provenientes de forks porque
+    # GitHub no entrega los Secrets a esos workflows.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
     runs-on: ubuntu-latest
@@ -28,23 +28,40 @@ jobs:
       # ============================================================
       # 1. CHECKOUT
       # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
 
       # ============================================================
-      # 2. VERIFICAR TESTSPRITE API KEY
+      # 2. CONFIGURAR NODE
       # ============================================================
-      - name: Verify TestSprite API Key
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+
+      # ============================================================
+      # 3. VERIFICAR SECRET
+      # ============================================================
+
+      - name: Verify TestSprite Secret
         env:
           TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
         run: |
-          echo "Checking TestSprite API Key..."
+
+          echo "=========================================="
+          echo "Checking TestSprite API Key"
+          echo "=========================================="
 
           if [ -z "$TESTSPRITE_API_KEY" ]; then
-            echo "❌ ERROR: TESTSPRITE_API_KEY is EMPTY"
-            echo "Verify that the secret exists in:"
-            echo "Repository → Settings → Secrets and variables → Actions"
+            echo "❌ TESTSPRITE_API_KEY is EMPTY"
+            echo ""
+            echo "Check:"
+            echo "GitHub → Settings → Secrets and variables"
+            echo "→ Actions → TESTSPRITE_API_KEY"
             exit 1
           fi
 
@@ -53,48 +70,80 @@ jobs:
 
 
       # ============================================================
-      # 3. BUILD AND START APPLICATION
+      # 4. INSTALAR TESTSPRITE CLI
       # ============================================================
+
+      - name: Install TestSprite CLI
+        run: |
+          npm install -g @testsprite/testsprite-cli
+
+
+      # ============================================================
+      # 5. TESTSPRITE DOCTOR
+      # ============================================================
+
+      - name: TestSprite Doctor
+        env:
+          TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
+        run: |
+
+          echo "=========================================="
+          echo "Running TestSprite Doctor"
+          echo "=========================================="
+
+          testsprite doctor
+
+
+      # ============================================================
+      # 6. BUILD AND START APPLICATION
+      # ============================================================
+
       - name: Build and start app containers
         run: |
-          echo "Building and starting Docker containers..."
+
+          echo "Building Docker containers..."
 
           docker compose up -d --build
 
-          echo "Docker containers started"
-
+          echo ""
+          echo "Docker containers:"
           docker compose ps
 
 
       # ============================================================
-      # 4. WAIT FOR FRONTEND
+      # 7. WAIT FOR FRONTEND
       # ============================================================
+
       - name: Wait for frontend to be ready
         run: |
+
           echo "Waiting for frontend on port 5173..."
 
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:5173 > /dev/null 2>&1; do sleep 2; done'
 
-          echo "✅ Frontend is up!"
+          echo "✅ Frontend is ready"
 
 
       # ============================================================
-      # 5. WAIT FOR BACKEND
+      # 8. WAIT FOR BACKEND
       # ============================================================
+
       - name: Wait for backend to be ready
         run: |
+
           echo "Waiting for backend on port 4000..."
 
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:4000/employees > /dev/null 2>&1; do sleep 2; done'
 
-          echo "✅ Backend is up!"
+          echo "✅ Backend is ready"
 
 
       # ============================================================
-      # 6. INSTALL CLOUDFLARE TUNNEL
+      # 9. CLOUDFLARE TUNNEL
       # ============================================================
+
       - name: Install and start Cloudflare Tunnel
         run: |
 
@@ -115,65 +164,65 @@ jobs:
 
           sleep 10
 
+          echo ""
           echo "Cloudflare log:"
           cat /tmp/cloudflared.log
 
-          # Obtener URL pública
           TUNNEL_URL=$(grep -o \
             'https://[^ ]*\.trycloudflare\.com' \
             /tmp/cloudflared.log \
             | head -1)
 
           if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ ERROR: Could not obtain Cloudflare Tunnel URL"
+            echo "❌ Could not obtain Cloudflare Tunnel URL"
             exit 1
           fi
 
-          echo "======================================"
-          echo "Cloudflare Tunnel URL:"
+          echo ""
+          echo "=========================================="
+          echo "Cloudflare URL:"
           echo "$TUNNEL_URL"
-          echo "======================================"
+          echo "=========================================="
 
           echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
 
       # ============================================================
-      # 7. VERIFY CLOUDFLARE TUNNEL
+      # 10. VERIFY CLOUDFLARE
       # ============================================================
-      - name: Verify tunnel is working
+
+      - name: Verify tunnel
         run: |
 
-          echo "Testing tunnel:"
+          echo "Testing:"
           echo "$TUNNEL_URL"
 
           curl -sI "$TUNNEL_URL" | head -10
 
-          echo "✅ Cloudflare Tunnel is responding"
+          echo "✅ Cloudflare Tunnel is working"
 
 
       # ============================================================
-      # 8. REWRITE URLS IN TESTSPRITE TESTS
+      # 11. UPDATE TEST URLS
       # ============================================================
-      - name: Rewrite hardcoded URLs in test scripts
+
+      - name: Rewrite TestSprite URLs
         run: |
 
-          echo "Replacing frontend URLs with:"
-          echo "$TUNNEL_URL"
+          echo "Updating TestSprite test URLs..."
 
-          # Replace 127.0.0.1
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://127.0.0.1:5173|$TUNNEL_URL|g" {} +
 
-          # Replace localhost
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://localhost:5173|$TUNNEL_URL|g" {} +
 
           echo ""
-          echo "Checking replacements..."
+          echo "Checking URLs..."
 
           grep -R \
             'trycloudflare.com' \
@@ -183,8 +232,9 @@ jobs:
 
 
       # ============================================================
-      # 9. RUN TESTSPRITE
+      # 12. RUN TESTSPRITE ACTION
       # ============================================================
+
       - name: Run TestSprite Action
         uses: TestSprite/run-action@v1
 
