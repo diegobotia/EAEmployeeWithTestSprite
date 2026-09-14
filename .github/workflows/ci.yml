@@ -71,3 +71,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base_url: ${{ env.TUNNEL_URL }}
           blocking: 'false'
+      
+      - name: Verify Secret Injection
+        run: |
+         if [ -z "${{ secrets.TESTSPRITE_API_KEY }}" ]; then
+         echo "Error: El secreto está vacío. GitHub no lo encontró."
+         exit 1
+         else
+          echo "El secreto está configurado y presente."
+         fi
