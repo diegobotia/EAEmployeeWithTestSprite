@@ -1,4 +1,3 @@
-
 name: CI
 
 on:
@@ -11,61 +10,152 @@ on:
 
 jobs:
   build-and-test:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
     runs-on: ubuntu-latest
+
     permissions:
       pull-requests: write
       issues: write
       contents: read
+
     steps:
-      - uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      # --------------------------------------------------
+      # 2. Verify TestSprite secret
+      # --------------------------------------------------
+      - name: Verify TestSprite API Key
+        env:
+          TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
+        run: |
+          if [ -z "$TESTSPRITE_API_KEY" ]; then
+            echo "ERROR: TESTSPRITE_API_KEY is empty"
+            exit 1
+          fi
+
+          echo "TESTSPRITE_API_KEY is configured"
+          echo "Key length: ${#TESTSPRITE_API_KEY}"
+
+
+      # --------------------------------------------------
+      # 3. Build containers
+      # --------------------------------------------------
       - name: Build and start app containers
-        run: docker compose up -d --build
+        run: |
+          docker compose up -d --build
 
+
+      # --------------------------------------------------
+      # 4. Wait frontend
+      # --------------------------------------------------
       - name: Wait for frontend to be ready
         run: |
           echo "Waiting for frontend on port 5173..."
-          timeout 60 bash -c 'until curl -s http://127.0.0.1:5173 > /dev/null 2>&1; do sleep 2; done'
+
+          timeout 60 bash -c \
+            'until curl -s http://127.0.0.1:5173 > /dev/null 2>&1; do sleep 2; done'
+
           echo "Frontend is up!"
 
+
+      # --------------------------------------------------
+      # 5. Wait backend
+      # --------------------------------------------------
       - name: Wait for backend to be ready
         run: |
           echo "Waiting for backend on port 4000..."
-          timeout 60 bash -c 'until curl -s http://127.0.0.1:4000/employees > /dev/null 2>&1; do sleep 2; done'
+
+          timeout 60 bash -c \
+            'until curl -s http://127.0.0.1:4000/employees > /dev/null 2>&1; do sleep 2; done'
+
           echo "Backend is up!"
 
+
+      # --------------------------------------------------
+      # 6. Install Cloudflare Tunnel
+      # --------------------------------------------------
       - name: Install and start Cloudflare Tunnel
         run: |
-          # Install cloudflared
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+
+          curl -sL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+            -o cloudflared.deb
+
           sudo dpkg -i cloudflared.deb
 
-          # Start tunnel for frontend and capture the public URL
-          cloudflared tunnel --url http://127.0.0.1:5173 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          cloudflared tunnel \
+            --url http://127.0.0.1:5173 \
+            --no-autoupdate \
+            > /tmp/cloudflared.log 2>&1 &
+
           sleep 10
 
-          # Extract the tunnel URL from the logs
-          TUNNEL_URL=$(grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
+          TUNNEL_URL=$(grep -o \
+            'https://.*\.trycloudflare\.com' \
+            /tmp/cloudflared.log | head -1)
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "ERROR: Could not obtain Cloudflare Tunnel URL"
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
           echo "Tunnel URL: $TUNNEL_URL"
+
           echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
 
+
+      # --------------------------------------------------
+      # 7. Verify tunnel
+      # --------------------------------------------------
       - name: Verify tunnel is working
         run: |
-          echo "Testing tunnel URL: $TUNNEL_URL"
-          curl -sI "$TUNNEL_URL" | head -5
+          echo "Testing tunnel URL..."
 
+          curl -sI "$TUNNEL_URL" | head -10
+
+
+      # --------------------------------------------------
+      # 8. Replace URLs
+      # --------------------------------------------------
       - name: Rewrite hardcoded URLs in test scripts
         run: |
-          echo "Replacing http://127.0.0.1:5173 with $TUNNEL_URL in test files..."
-          find testsprite_tests -name '*.py' -exec sed -i "s|http://127.0.0.1:5173|$TUNNEL_URL|g" {} +
-          echo "Replacing http://localhost:5173 with $TUNNEL_URL in test files..."
-          find testsprite_tests -name '*.py' -exec sed -i "s|http://localhost:5173|$TUNNEL_URL|g" {} +
-          # Show a sample to verify
-          grep -r 'trycloudflare' testsprite_tests/*.py | head -3 || echo "No replacements found - check URL pattern"
 
-      - name: Run Testsprite Action
+          echo "Replacing frontend URLs..."
+
+          find testsprite_tests \
+            -name '*.py' \
+            -exec sed -i \
+            "s|http://127.0.0.1:5173|$TUNNEL_URL|g" {} +
+
+          find testsprite_tests \
+            -name '*.py' \
+            -exec sed -i \
+            "s|http://localhost:5173|$TUNNEL_URL|g" {} +
+
+          echo "Checking replacements..."
+
+          grep -r \
+            'trycloudflare' \
+            testsprite_tests/*.py \
+            | head -3 \
+            || echo "No replacements found"
+
+
+      # --------------------------------------------------
+      # 9. Run TestSprite
+      # --------------------------------------------------
+      - name: Run TestSprite Action
         uses: TestSprite/run-action@v1
         continue-on-error: true
+
         with:
           testsprite-api-key: ${{ secrets.TESTSPRITE_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
