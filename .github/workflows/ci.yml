@@ -84,4 +84,4 @@ jobs:
       - name: Verify Secret Update
         run: |
           SECRET="${{ secrets.TESTSPRITE_API_KEY }}"
-          echo "Los primeros 20 caracteres son: ${SECRET:0:20}"
+          echo "Los primeros 30 caracteres son: ${SECRET:0:30}"
