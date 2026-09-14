@@ -4,12 +4,16 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
 
 jobs:
   build-and-test:
+
+    # Evita ejecutar el workflow para PRs provenientes de forks,
+    # donde GitHub no entrega los Secrets.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
     runs-on: ubuntu-latest
@@ -21,40 +25,50 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # 1. Checkout
-      # --------------------------------------------------
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
 
-      # --------------------------------------------------
-      # 2. Verify TestSprite secret
-      # --------------------------------------------------
+      # ============================================================
+      # 2. VERIFICAR TESTSPRITE API KEY
+      # ============================================================
       - name: Verify TestSprite API Key
         env:
           TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
         run: |
+          echo "Checking TestSprite API Key..."
+
           if [ -z "$TESTSPRITE_API_KEY" ]; then
-            echo "ERROR: TESTSPRITE_API_KEY is empty"
+            echo "❌ ERROR: TESTSPRITE_API_KEY is EMPTY"
+            echo "Verify that the secret exists in:"
+            echo "Repository → Settings → Secrets and variables → Actions"
             exit 1
           fi
 
-          echo "TESTSPRITE_API_KEY is configured"
-          echo "Key length: ${#TESTSPRITE_API_KEY}"
+          echo "✅ TESTSPRITE_API_KEY exists"
+          echo "API Key length: ${#TESTSPRITE_API_KEY}"
 
 
-      # --------------------------------------------------
-      # 3. Build containers
-      # --------------------------------------------------
+      # ============================================================
+      # 3. BUILD AND START APPLICATION
+      # ============================================================
       - name: Build and start app containers
         run: |
+          echo "Building and starting Docker containers..."
+
           docker compose up -d --build
 
+          echo "Docker containers started"
 
-      # --------------------------------------------------
-      # 4. Wait frontend
-      # --------------------------------------------------
+          docker compose ps
+
+
+      # ============================================================
+      # 4. WAIT FOR FRONTEND
+      # ============================================================
       - name: Wait for frontend to be ready
         run: |
           echo "Waiting for frontend on port 5173..."
@@ -62,12 +76,12 @@ jobs:
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:5173 > /dev/null 2>&1; do sleep 2; done'
 
-          echo "Frontend is up!"
+          echo "✅ Frontend is up!"
 
 
-      # --------------------------------------------------
-      # 5. Wait backend
-      # --------------------------------------------------
+      # ============================================================
+      # 5. WAIT FOR BACKEND
+      # ============================================================
       - name: Wait for backend to be ready
         run: |
           echo "Waiting for backend on port 4000..."
@@ -75,20 +89,24 @@ jobs:
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:4000/employees > /dev/null 2>&1; do sleep 2; done'
 
-          echo "Backend is up!"
+          echo "✅ Backend is up!"
 
 
-      # --------------------------------------------------
-      # 6. Install Cloudflare Tunnel
-      # --------------------------------------------------
+      # ============================================================
+      # 6. INSTALL CLOUDFLARE TUNNEL
+      # ============================================================
       - name: Install and start Cloudflare Tunnel
         run: |
+
+          echo "Installing cloudflared..."
 
           curl -sL \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
             -o cloudflared.deb
 
           sudo dpkg -i cloudflared.deb
+
+          echo "Starting Cloudflare Tunnel..."
 
           cloudflared tunnel \
             --url http://127.0.0.1:5173 \
@@ -97,64 +115,78 @@ jobs:
 
           sleep 10
 
+          echo "Cloudflare log:"
+          cat /tmp/cloudflared.log
+
+          # Obtener URL pública
           TUNNEL_URL=$(grep -o \
-            'https://.*\.trycloudflare\.com' \
-            /tmp/cloudflared.log | head -1)
+            'https://[^ ]*\.trycloudflare\.com' \
+            /tmp/cloudflared.log \
+            | head -1)
 
           if [ -z "$TUNNEL_URL" ]; then
-            echo "ERROR: Could not obtain Cloudflare Tunnel URL"
-            cat /tmp/cloudflared.log
+            echo "❌ ERROR: Could not obtain Cloudflare Tunnel URL"
             exit 1
           fi
 
-          echo "Tunnel URL: $TUNNEL_URL"
+          echo "======================================"
+          echo "Cloudflare Tunnel URL:"
+          echo "$TUNNEL_URL"
+          echo "======================================"
 
-          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
 
-      # --------------------------------------------------
-      # 7. Verify tunnel
-      # --------------------------------------------------
+      # ============================================================
+      # 7. VERIFY CLOUDFLARE TUNNEL
+      # ============================================================
       - name: Verify tunnel is working
         run: |
-          echo "Testing tunnel URL..."
+
+          echo "Testing tunnel:"
+          echo "$TUNNEL_URL"
 
           curl -sI "$TUNNEL_URL" | head -10
 
+          echo "✅ Cloudflare Tunnel is responding"
 
-      # --------------------------------------------------
-      # 8. Replace URLs
-      # --------------------------------------------------
+
+      # ============================================================
+      # 8. REWRITE URLS IN TESTSPRITE TESTS
+      # ============================================================
       - name: Rewrite hardcoded URLs in test scripts
         run: |
 
-          echo "Replacing frontend URLs..."
+          echo "Replacing frontend URLs with:"
+          echo "$TUNNEL_URL"
 
+          # Replace 127.0.0.1
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://127.0.0.1:5173|$TUNNEL_URL|g" {} +
 
+          # Replace localhost
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://localhost:5173|$TUNNEL_URL|g" {} +
 
+          echo ""
           echo "Checking replacements..."
 
-          grep -r \
-            'trycloudflare' \
-            testsprite_tests/*.py \
-            | head -3 \
-            || echo "No replacements found"
+          grep -R \
+            'trycloudflare.com' \
+            testsprite_tests \
+            | head -10 \
+            || echo "No Cloudflare URLs found"
 
 
-      # --------------------------------------------------
-      # 9. Run TestSprite
-      # --------------------------------------------------
+      # ============================================================
+      # 9. RUN TESTSPRITE
+      # ============================================================
       - name: Run TestSprite Action
         uses: TestSprite/run-action@v1
-        continue-on-error: true
 
         with:
           testsprite-api-key: ${{ secrets.TESTSPRITE_API_KEY }}
