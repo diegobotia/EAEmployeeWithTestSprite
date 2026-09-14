@@ -9,19 +9,22 @@ on:
     branches:
       - main
 
+
 jobs:
+
   build-and-test:
 
-    # No ejecutar en PRs provenientes de forks porque
-    # GitHub no entrega los Secrets a esos workflows.
+    # Evita ejecutar TestSprite en PRs provenientes de forks,
+    # porque GitHub no entrega los Secrets a esos workflows.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
     runs-on: ubuntu-latest
 
     permissions:
+      contents: read
       pull-requests: write
       issues: write
-      contents: read
+
 
     steps:
 
@@ -34,74 +37,58 @@ jobs:
 
 
       # ============================================================
-      # 2. CONFIGURAR NODE
+      # 2. VERIFICAR TESTSPRITE API KEY
       # ============================================================
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-
-      # ============================================================
-      # 3. VERIFICAR SECRET
-      # ============================================================
-
-      - name: Verify TestSprite Secret
+      - name: Verify TestSprite API Key
         env:
           TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
         run: |
 
           echo "=========================================="
-          echo "Checking TestSprite API Key"
+          echo "TESTSPRITE API KEY CHECK"
           echo "=========================================="
 
           if [ -z "$TESTSPRITE_API_KEY" ]; then
-            echo "❌ TESTSPRITE_API_KEY is EMPTY"
-            echo ""
-            echo "Check:"
-            echo "GitHub → Settings → Secrets and variables"
-            echo "→ Actions → TESTSPRITE_API_KEY"
+            echo "ERROR: TESTSPRITE_API_KEY is EMPTY"
             exit 1
           fi
 
-          echo "✅ TESTSPRITE_API_KEY exists"
+          echo "TESTSPRITE_API_KEY exists"
           echo "API Key length: ${#TESTSPRITE_API_KEY}"
 
 
       # ============================================================
-      # 4. INSTALAR TESTSPRITE CLI
+      # 3. VERIFICAR TESTSPRITE PROJECT ID
       # ============================================================
 
-      - name: Install TestSprite CLI
-        run: |
-          npm install -g @testsprite/testsprite-cli
-
-
-      # ============================================================
-      # 5. TESTSPRITE DOCTOR
-      # ============================================================
-
-      - name: TestSprite Doctor
+      - name: Verify TestSprite Project ID
         env:
-          TESTSPRITE_API_KEY: ${{ secrets.TESTSPRITE_API_KEY }}
+          TESTSPRITE_PROJECT_ID: ${{ secrets.TESTSPRITE_PROJECT_ID }}
         run: |
 
           echo "=========================================="
-          echo "Running TestSprite Doctor"
+          echo "TESTSPRITE PROJECT CHECK"
           echo "=========================================="
 
-          testsprite doctor
+          if [ -z "$TESTSPRITE_PROJECT_ID" ]; then
+            echo "ERROR: TESTSPRITE_PROJECT_ID is EMPTY"
+            exit 1
+          fi
+
+          echo "TESTSPRITE_PROJECT_ID exists"
 
 
       # ============================================================
-      # 6. BUILD AND START APPLICATION
+      # 4. BUILD AND START APPLICATION
       # ============================================================
 
       - name: Build and start app containers
         run: |
 
-          echo "Building Docker containers..."
+          echo "=========================================="
+          echo "BUILDING APPLICATION"
+          echo "=========================================="
 
           docker compose up -d --build
 
@@ -111,49 +98,56 @@ jobs:
 
 
       # ============================================================
-      # 7. WAIT FOR FRONTEND
+      # 5. WAIT FOR FRONTEND
       # ============================================================
 
       - name: Wait for frontend to be ready
         run: |
 
-          echo "Waiting for frontend on port 5173..."
+          echo "=========================================="
+          echo "WAITING FOR FRONTEND"
+          echo "=========================================="
 
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:5173 > /dev/null 2>&1; do sleep 2; done'
 
-          echo "✅ Frontend is ready"
+          echo "Frontend is ready"
 
 
       # ============================================================
-      # 8. WAIT FOR BACKEND
+      # 6. WAIT FOR BACKEND
       # ============================================================
 
       - name: Wait for backend to be ready
         run: |
 
-          echo "Waiting for backend on port 4000..."
+          echo "=========================================="
+          echo "WAITING FOR BACKEND"
+          echo "=========================================="
 
           timeout 60 bash -c \
             'until curl -s http://127.0.0.1:4000/employees > /dev/null 2>&1; do sleep 2; done'
 
-          echo "✅ Backend is ready"
+          echo "Backend is ready"
 
 
       # ============================================================
-      # 9. CLOUDFLARE TUNNEL
+      # 7. INSTALL CLOUDFLARE TUNNEL
       # ============================================================
 
       - name: Install and start Cloudflare Tunnel
         run: |
 
-          echo "Installing cloudflared..."
+          echo "=========================================="
+          echo "INSTALLING CLOUDFLARE"
+          echo "=========================================="
 
           curl -sL \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
             -o cloudflared.deb
 
           sudo dpkg -i cloudflared.deb
+
 
           echo "Starting Cloudflare Tunnel..."
 
@@ -162,67 +156,101 @@ jobs:
             --no-autoupdate \
             > /tmp/cloudflared.log 2>&1 &
 
+
           sleep 10
+
 
           echo ""
           echo "Cloudflare log:"
           cat /tmp/cloudflared.log
 
+
+          # Obtener URL pública
           TUNNEL_URL=$(grep -o \
             'https://[^ ]*\.trycloudflare\.com' \
             /tmp/cloudflared.log \
             | head -1)
 
+
           if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ Could not obtain Cloudflare Tunnel URL"
+
+            echo "ERROR: Could not obtain Cloudflare Tunnel URL"
+
+            cat /tmp/cloudflared.log
+
             exit 1
+
           fi
+
 
           echo ""
           echo "=========================================="
-          echo "Cloudflare URL:"
-          echo "$TUNNEL_URL"
+          echo "CLOUDFLARE TUNNEL"
           echo "=========================================="
+
+          echo "$TUNNEL_URL"
+
 
           echo "TUNNEL_URL=$TUNNEL_URL" >> "$GITHUB_ENV"
 
 
       # ============================================================
-      # 10. VERIFY CLOUDFLARE
+      # 8. VERIFY CLOUDFLARE TUNNEL
       # ============================================================
 
       - name: Verify tunnel
         run: |
 
-          echo "Testing:"
+          echo "=========================================="
+          echo "VERIFYING CLOUDFLARE"
+          echo "=========================================="
+
+          echo "URL:"
           echo "$TUNNEL_URL"
+
+          echo ""
 
           curl -sI "$TUNNEL_URL" | head -10
 
-          echo "✅ Cloudflare Tunnel is working"
+          echo ""
+          echo "Cloudflare Tunnel is working"
 
 
       # ============================================================
-      # 11. UPDATE TEST URLS
+      # 9. UPDATE TEST URLS
       # ============================================================
 
       - name: Rewrite TestSprite URLs
         run: |
 
-          echo "Updating TestSprite test URLs..."
+          echo "=========================================="
+          echo "UPDATING TEST URLS"
+          echo "=========================================="
+
+          echo "Replacing:"
+          echo "http://127.0.0.1:5173"
+          echo "http://localhost:5173"
+
+          echo ""
+          echo "With:"
+          echo "$TUNNEL_URL"
+
 
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://127.0.0.1:5173|$TUNNEL_URL|g" {} +
 
+
           find testsprite_tests \
             -name '*.py' \
             -exec sed -i \
             "s|http://localhost:5173|$TUNNEL_URL|g" {} +
 
+
           echo ""
-          echo "Checking URLs..."
+          echo "Checking replacements..."
+
 
           grep -R \
             'trycloudflare.com' \
@@ -232,14 +260,57 @@ jobs:
 
 
       # ============================================================
-      # 12. RUN TESTSPRITE ACTION
+      # 10. RUN TESTSPRITE
       # ============================================================
 
-      - name: Run TestSprite Action
-        uses: TestSprite/run-action@v1
+      - name: Run TestSprite
+        id: testsprite
+        uses: TestSprite/testsprite-action@v1
 
         with:
-          testsprite-api-key: ${{ secrets.TESTSPRITE_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          base_url: ${{ env.TUNNEL_URL }}
-          blocking: 'false'
+
+          # API Key de TestSprite
+          api-key: ${{ secrets.TESTSPRITE_API_KEY }}
+
+          # ID del proyecto TestSprite
+          project: ${{ secrets.TESTSPRITE_PROJECT_ID }}
+
+          # Dejar que TestSprite ejecute toda la suite
+          allow-partial: false
+
+          # Tiempo máximo de espera
+          timeout: 600
+
+          # Generar reporte JUnit
+          report-file: testsprite-junit.xml
+
+          # Subir reporte como artifact
+          upload-artifact: true
+
+          # Nombre del artifact
+          artifact-name: testsprite-junit
+
+
+      # ============================================================
+      # 11. MOSTRAR RESULTADO
+      # ============================================================
+
+      - name: TestSprite Summary
+        if: always()
+        run: |
+
+          echo "=========================================="
+          echo "TESTSPRITE RESULT"
+          echo "=========================================="
+
+          echo "Passed:"
+          echo "${{ steps.testsprite.outputs.passed }}"
+
+          echo "Total:"
+          echo "${{ steps.testsprite.outputs.total }}"
+
+          echo "Failed:"
+          echo "${{ steps.testsprite.outputs.failed }}"
+
+          echo "Skipped:"
+          echo "${{ steps.testsprite.outputs.skipped }}"
