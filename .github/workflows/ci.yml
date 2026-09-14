@@ -67,7 +67,7 @@ jobs:
         uses: TestSprite/run-action@v1
         continue-on-error: true
         with:
-          testsprite-api-key: ${{ secrets.TESTSPRITE_API_KEY }}
+          testsprite-api-key: sk-member-2oWhQoKFobpUEkHBpxDWTbjI6g9LhY9dH1a5sroVEYE
           github-token: ${{ secrets.GITHUB_TOKEN }}
           base_url: ${{ env.TUNNEL_URL }}
           blocking: 'false'
