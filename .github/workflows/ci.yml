@@ -80,3 +80,8 @@ jobs:
          else
           echo "El secreto está configurado y presente."
          fi
+
+      - name: Verify Secret Update
+        run: |
+          SECRET="${{ secrets.TESTSPRITE_API_KEY }}"
+          echo "Los primeros 4 caracteres son: ${SECRET:0:10}"
